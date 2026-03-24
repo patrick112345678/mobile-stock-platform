@@ -152,31 +152,31 @@ export function AccountTopBar({
           onClick={() => onMenuOpenChange(false)}
         />
       ) : null}
-      <header className="relative z-[65] flex shrink-0 items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-950/95 px-4 py-2">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
+      <header className="relative z-[65] flex min-h-0 shrink-0 items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-950/95 px-3 py-1 sm:gap-3 sm:px-4 sm:py-2">
+        <div className="flex min-h-0 min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
           {showNavToggle && onOpenNav ? (
             <button
               type="button"
               onClick={() => onOpenNav()}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-zinc-700 bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
+              className="flex size-10 shrink-0 touch-manipulation items-center justify-center rounded-lg border border-zinc-700 bg-zinc-900 text-zinc-200 active:bg-zinc-800 sm:rounded-xl"
               aria-label="開啟選股與自選"
             >
-              <Menu size={20} />
+              <Menu size={18} strokeWidth={2} />
             </button>
           ) : null}
-          <span className="truncate text-sm text-zinc-500">看盤工作台</span>
+          <span className="truncate text-xs leading-tight text-zinc-500 sm:text-sm">看盤工作台</span>
         </div>
-        <div className="relative">
+        <div className="relative shrink-0">
           <button
             type="button"
             onClick={() => onMenuOpenChange(!menuOpen)}
-            className="flex h-10 w-10 items-center justify-center rounded-full border border-zinc-600 bg-gradient-to-br from-violet-600 to-fuchsia-700 text-sm font-bold text-white shadow-md hover:opacity-90"
+            className="flex size-10 touch-manipulation items-center justify-center rounded-full border border-zinc-600 bg-gradient-to-br from-violet-600 to-fuchsia-700 text-xs font-bold text-white shadow-md active:opacity-90 sm:text-sm"
             title="會員選單"
           >
             {avatarLetter(user?.username ?? "")}
           </button>
           {menuOpen ? (
-            <div className="fixed right-4 top-14 z-[80] w-[min(18rem,calc(100vw-2rem))] rounded-xl border border-zinc-700 bg-zinc-900 p-4 shadow-xl sm:right-6">
+            <div className="fixed right-3 top-12 z-[80] w-[min(18rem,calc(100vw-1.5rem))] rounded-xl border border-zinc-700 bg-zinc-900 p-3 shadow-xl sm:right-4 sm:top-14 sm:p-4">
               <div className="mb-3 border-b border-zinc-800 pb-3">
                 <div className="font-semibold text-white">{user?.username ?? "—"}</div>
                 <div className="mt-1 text-xs text-zinc-400">{user?.email || "未綁定 Email"}</div>
