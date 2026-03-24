@@ -51,3 +51,19 @@ select {
 .pt-safe {
   padding-top: env(safe-area-inset-top, 0px);
 }
+
+/* 看盤主畫面進入時輕微淡入，減少從骨架切到內容的頓感 */
+@media (prefers-reduced-motion: no-preference) {
+  .dashboard-enter {
+    animation: dashboard-fade-in 0.22s ease-out;
+  }
+}
+
+@keyframes dashboard-fade-in {
+  from {
+    opacity: 0.92;
+  }
+  to {
+    opacity: 1;
+  }
+}

@@ -12,6 +12,7 @@ import {
   PanelRightOpen,
   X,
 } from "lucide-react"
+import { DashboardBootSkeleton, InlineLoading } from "@/components/LoadingShell"
 import TradingChart from "@/components/TradingChart"
 import { AiReportPanel } from "@/components/AiReportPanel"
 import { AccountSidebarCard, AccountTopBar } from "@/components/DashboardAccount"
@@ -268,6 +269,8 @@ export default function Home() {
       return
     }
 
+    setCheckedAuth(true)
+
     ;(async () => {
       try {
         const u = await fetchCurrentUser()
@@ -275,8 +278,10 @@ export default function Home() {
         setAiAccess(!!u.ai_access)
       } catch {
         setAiAccess(false)
+        clearToken()
+        router.replace("/login?msg=" + encodeURIComponent("登入已過期，請重新登入"))
+        return
       }
-      setCheckedAuth(true)
       void loadWatchlist()
     })()
   }, [router])
@@ -754,15 +759,11 @@ export default function Home() {
   const showSidebarFull = !isLg || !isSidebarCollapsed
 
   if (!checkedAuth) {
-    return (
-      <div className="min-h-screen bg-black text-white flex items-center justify-center">
-        驗證登入中...
-      </div>
-    )
+    return <DashboardBootSkeleton />
   }
 
   return (
-    <div className="flex h-screen min-h-0 bg-black text-white overflow-hidden flex-col">
+    <div className="dashboard-enter flex h-screen min-h-0 bg-black text-white overflow-hidden flex-col">
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
         {!isLg && mobileDrawerOpen ? (
           <button
@@ -1184,8 +1185,9 @@ export default function Home() {
                     ))}
                   </div>
                   {loading && chartData.length === 0 ? (
-                    <div className="flex min-h-[min(55vh,520px)] items-center justify-center text-zinc-400">
-                      K 線資料載入中...
+                    <div className="flex min-h-[min(55vh,520px)] flex-col items-center justify-center gap-4">
+                      <div className="h-[min(40vh,360px)] w-full max-w-3xl animate-pulse rounded-xl border border-zinc-800/60 bg-zinc-900/40" />
+                      <InlineLoading label="載入 K 線…" />
                     </div>
                   ) : chartData.length > 0 ? (
                     <TradingChart data={chartData} />
@@ -1269,7 +1271,7 @@ export default function Home() {
                     </div>
 
                     {scanning ? (
-                      <div className="text-sm text-zinc-400">資料整理中...</div>
+                      <InlineLoading label="整理掃描結果…" />
                     ) : (scannerMode === "opportunities" ? filteredScannerResult : watchlistScannerItems).length === 0 ? (
                       <div className="text-sm text-zinc-400">
                         {scannerMode === "opportunities"
@@ -1419,7 +1421,7 @@ export default function Home() {
 
                 <div className="p-4">
                   {(aiMode === "daily" ? loadingAiOpportunities : loadingWatchlistTech) ? (
-                    <div className="text-sm text-zinc-400">載入中...</div>
+                    <InlineLoading label="載入清單…" />
                   ) : (aiMode === "daily" ? aiOpportunityItems : watchlistTechItems).length === 0 ? (
                     <div className="text-sm text-zinc-400">
                       {aiMode === "daily"
@@ -1536,7 +1538,7 @@ export default function Home() {
                 <div className="bg-zinc-900 rounded-2xl border border-zinc-800 p-5">
                   <h3 className="text-lg font-bold mb-4">自動同業比較</h3>
                   {loadingPeers ? (
-                    <div className="text-zinc-400">載入中...</div>
+                    <InlineLoading label="載入同業資料…" />
                   ) : peers.length === 0 ? (
                     <div className="text-zinc-400">目前無法取得有效同業資料（僅支援台股、美股）</div>
                   ) : (
@@ -1590,7 +1592,7 @@ export default function Home() {
                   </select>
                 </div>
                 {leaderboardLoading ? (
-                  <div className="text-zinc-400">載入中...</div>
+                  <InlineLoading label="載入排行榜…" />
                 ) : (() => {
                     const marketLabel = marketPool === "TW" ? "台股" : marketPool === "US" ? "美股" : "虛擬貨幣"
                     const items = marketPool === "TW" ? twLeaderboardItems : marketPool === "US" ? usLeaderboardItems : cryptoLeaderboardItems

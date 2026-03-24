@@ -1,5 +1,6 @@
 "use client"
 
+import { AuthCardSkeleton } from "@/components/LoadingShell"
 import { Suspense, useEffect, useState } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { loginUser, saveToken } from "@/lib/api"
@@ -95,13 +96,7 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <Suspense
-      fallback={
-        <div className="flex min-h-screen items-center justify-center bg-black text-zinc-400">
-          載入中…
-        </div>
-      }
-    >
+    <Suspense fallback={<AuthCardSkeleton />}>
       <LoginForm />
     </Suspense>
   )
