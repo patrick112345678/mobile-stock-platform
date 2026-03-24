@@ -1,6 +1,5 @@
 "use client"
 
-import { AuthCardSkeleton } from "@/components/LoadingShell"
 import { Suspense, useEffect, useState } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { loginUser, saveToken } from "@/lib/api"
@@ -37,40 +36,38 @@ function LoginForm() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-black px-4 py-8 text-white pb-safe">
-      <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-900 p-6 sm:p-8">
-        <h1 className="mb-6 text-2xl font-bold sm:text-3xl">登入</h1>
+    <div className="flex min-h-dvh items-center justify-center bg-black px-4 py-8 pb-safe pt-safe text-white">
+      <div className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-2xl p-8">
+        <h1 className="text-3xl font-bold mb-6">登入</h1>
 
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
-            <label className="mb-2 block text-sm text-zinc-400">帳號</label>
+            <label className="block mb-2 text-sm text-zinc-400">帳號</label>
             <input
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              className="w-full rounded-xl border border-zinc-700 bg-zinc-800 px-3 py-3 outline-none sm:py-2"
+              className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 outline-none"
               placeholder="請輸入帳號"
-              autoComplete="username"
             />
           </div>
 
           <div>
-            <label className="mb-2 block text-sm text-zinc-400">密碼</label>
+            <label className="block mb-2 text-sm text-zinc-400">密碼</label>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded-xl border border-zinc-700 bg-zinc-800 px-3 py-3 outline-none sm:py-2"
+              className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 outline-none"
               placeholder="請輸入密碼"
-              autoComplete="current-password"
             />
           </div>
 
-          {error && <div className="text-sm text-red-400">{error}</div>}
+          {error && <div className="text-red-400 text-sm">{error}</div>}
 
           <button
             type="submit"
             disabled={loading}
-            className="min-h-12 w-full rounded-xl border border-zinc-700 bg-zinc-800 px-3 py-3 hover:bg-zinc-700 disabled:opacity-60 sm:min-h-10 sm:py-2"
+            className="w-full rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-2"
           >
             {loading ? "登入中..." : "登入"}
           </button>
@@ -96,7 +93,13 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <Suspense fallback={<AuthCardSkeleton />}>
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center bg-black text-zinc-400">
+          載入中…
+        </div>
+      }
+    >
       <LoginForm />
     </Suspense>
   )

@@ -85,11 +85,11 @@ export default function PricingPage() {
   }
 
   return (
-    <div className="min-h-screen bg-black pb-safe text-white">
-      <div className="mx-auto max-w-5xl px-4 py-10 sm:py-16">
+    <div className="min-h-dvh bg-black pb-safe pt-safe text-white">
+      <div className="mx-auto w-full max-w-[430px] px-4 py-8 sm:py-10">
         <div className="mb-10 text-center">
           <p className="text-sm font-medium uppercase tracking-[0.2em] text-zinc-500">Premium</p>
-          <h1 className="mt-2 text-2xl font-bold sm:text-4xl">解鎖 AI 研究與每日機會</h1>
+          <h1 className="mt-2 text-3xl font-bold sm:text-4xl">解鎖 AI 研究與每日機會</h1>
           <p className="mx-auto mt-3 max-w-xl text-sm text-zinc-400">
             參考 TradingView 式方案：頁面以 USD 試算；<strong className="text-zinc-200">實際扣款為新台幣</strong>
             ，由藍新金流 MPG 結帳。
@@ -135,7 +135,7 @@ export default function PricingPage() {
           ))}
         </div>
 
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4">
           {rows.map((r) => (
             <div
               key={r.id}
@@ -183,7 +183,7 @@ export default function PricingPage() {
                 type="button"
                 disabled={payingPlan !== null || !payPlans?.gateway_ready}
                 onClick={() => void handlePay(r.id)}
-                className="mt-6 min-h-12 w-full rounded-xl border border-violet-600 bg-violet-600 py-3 text-sm font-medium text-white hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
+                className="mt-6 w-full rounded-xl border border-violet-600 bg-violet-600 py-3 text-sm font-medium text-white hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {payingPlan === r.id ? "導向藍新…" : payPlans?.gateway_ready ? "前往藍新付款" : "後端未設定金流"}
               </button>

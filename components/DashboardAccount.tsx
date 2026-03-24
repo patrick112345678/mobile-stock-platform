@@ -133,7 +133,7 @@ export function AccountTopBar({
   onMenuOpenChange: (open: boolean) => void
   onRefreshUser: () => Promise<void>
   onLogout: () => void
-  /** 手機版：開啟左側選股／自選抽屜 */
+  /** 行動版：顯示左側選單（自選／搜尋） */
   showNavToggle?: boolean
   onOpenNav?: () => void
 }) {
@@ -152,13 +152,13 @@ export function AccountTopBar({
           onClick={() => onMenuOpenChange(false)}
         />
       ) : null}
-      <header className="relative z-[65] flex shrink-0 items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-950/95 px-3 py-2 pt-safe sm:px-4">
+      <header className="relative z-[65] flex shrink-0 items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-950/95 px-4 py-2">
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          {showNavToggle ? (
+          {showNavToggle && onOpenNav ? (
             <button
               type="button"
-              onClick={() => onOpenNav?.()}
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-zinc-700 bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
+              onClick={() => onOpenNav()}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-zinc-700 bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
               aria-label="開啟選股與自選"
             >
               <Menu size={20} />

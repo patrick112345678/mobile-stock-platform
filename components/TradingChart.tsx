@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef } from "react"
 import {
   createChart,
   CandlestickSeries,
@@ -46,24 +46,12 @@ function calculateMA(data: Candle[], period: number) {
 
 export default function TradingChart({ data }: Props) {
   const ref = useRef<HTMLDivElement>(null)
-  const [height, setHeight] = useState(320)
-
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const ro = new ResizeObserver((entries) => {
-      const w = entries[0]?.contentRect?.width ?? 360
-      setHeight(Math.round(Math.min(520, Math.max(220, w * 0.62))))
-    })
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
 
   useEffect(() => {
     if (!ref.current || !data?.length) return
 
     const chart = createChart(ref.current, {
-      height,
+      height: 520,
       layout: {
         background: { type: ColorType.Solid, color: "#18181b" },
         textColor: "#d4d4d8"
@@ -118,13 +106,7 @@ export default function TradingChart({ data }: Props) {
     chart.timeScale().fitContent()
 
     return () => chart.remove()
-  }, [data, height])
+  }, [data])
 
-  return (
-    <div
-      ref={ref}
-      className="w-full touch-pan-x touch-pan-y"
-      style={{ height }}
-    />
-  )
+  return <div ref={ref} className="w-full h-[520px]" />
 }

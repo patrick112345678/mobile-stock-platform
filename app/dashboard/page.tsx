@@ -12,11 +12,19 @@ import {
   PanelRightOpen,
   X,
 } from "lucide-react"
-import { DashboardBootSkeleton, InlineLoading } from "@/components/LoadingShell"
 import TradingChart from "@/components/TradingChart"
 import { AiReportPanel } from "@/components/AiReportPanel"
 import { AccountSidebarCard, AccountTopBar } from "@/components/DashboardAccount"
 import { formatStockLabel, StockLabel } from "@/components/StockLabel"
+import { WatchlistSortableList } from "@/components/WatchlistSortableList"
+import {
+  SkeletonBar,
+  SkeletonChartBlock,
+  SkeletonLines,
+  SkeletonMetricCell,
+  SkeletonPeerTableRows,
+  SkeletonTechCard,
+} from "@/components/Skeleton"
 import {
   addWatchlist,
   analyzeAI,
@@ -36,6 +44,7 @@ import {
   getSignalTable,
   getWatchlist,
   getWatchlistOverview,
+  reorderWatchlist,
   scanMarket,
   searchMarket,
   type AIAnalyzeResponse,
@@ -70,6 +79,42 @@ type WatchItem = {
   market: "TW" | "US" | "CRYPTO"
   name?: string | null
 }
+
+/** 左／右側欄固定寬度（已移除拖曳調整） */
+const SIDEBAR_WIDTH_PX = 260
+const RIGHT_PANEL_WIDTH_PX = 420
+
+/** 短時間內重複切回同一標的時共用同一 Promise／快取結果，減少重複請求 */
+const STOCK_API_CACHE_TTL_MS = 45_000
+
+function createDedupedStockFetch() {
+  const inflight = new Map<string, Promise<unknown>>()
+  const cache = new Map<string, { at: number; value: unknown }>()
+  return function dedupe<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
+    const now = Date.now()
+    const hit = cache.get(key)
+    if (hit && now - hit.at < STOCK_API_CACHE_TTL_MS) {
+      return Promise.resolve(hit.value as T)
+    }
+    let p = inflight.get(key) as Promise<T> | undefined
+    if (!p) {
+      p = fetcher()
+        .then((v) => {
+          cache.set(key, { at: Date.now(), value: v })
+          inflight.delete(key)
+          return v
+        })
+        .catch((e) => {
+          inflight.delete(key)
+          throw e
+        })
+      inflight.set(key, p)
+    }
+    return p
+  }
+}
+
+const stockFetchDedupe = createDedupedStockFetch()
 
 function normalizeWatchlistSymbol(symbol: string, market: WatchItem["market"]) {
   const s = String(symbol ?? "")
@@ -118,29 +163,45 @@ export default function Home() {
   const [aiAccess, setAiAccess] = useState(false)
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
-  const [marketPool, setMarketPool] = useState<"TW" | "US" | "CRYPTO">("US")
+  const [marketPool, setMarketPool] = useState<"TW" | "US" | "CRYPTO">("TW")
   const [scanPool, setScanPool] = useState<"TOP30" | "TOP100" | "TOP800" | "ALL">("TOP30")
-  const [symbolInput, setSymbolInput] = useState("AAPL")
+  const [symbolInput, setSymbolInput] = useState("2330")
   const [showChart, setShowChart] = useState(false)
   const [chartInterval, setChartInterval] = useState<"1h" | "4h" | "1d" | "1wk">("1d")
 
-  const [sidebarWidth, setSidebarWidth] = useState(260)
   const [watchlist, setWatchlist] = useState<WatchItem[]>([])
   const [watchlistOverview, setWatchlistOverview] = useState<{ id: number; symbol: string; market: string; change_percent?: number | null }[]>([])
   const [selected, setSelected] = useState<WatchItem>({
-    symbol: "AAPL",
-    market: "US",
+    symbol: "2330",
+    market: "TW",
   })
 
   const [quote, setQuote] = useState<QuoteData | null>(null)
   const [chartData, setChartData] = useState<ChartCandle[]>([])
-  const [loading, setLoading] = useState(false)
+  const [quoteLoading, setQuoteLoading] = useState(false)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [chartLoading, setChartLoading] = useState(false)
+  const [mtfLoading, setMtfLoading] = useState(false)
+  const [sigLoading, setSigLoading] = useState(false)
+  const [aiLoading, setAiLoading] = useState(false)
+  /** 各區資料對應的 `${symbol}-${market}`，用於避免切換標的時短暫顯示上一檔資料 */
+  const [quoteKey, setQuoteKey] = useState<string | null>(null)
+  const [detailKey, setDetailKey] = useState<string | null>(null)
+  const [chartKey, setChartKey] = useState<string | null>(null)
+  const [mtfKey, setMtfKey] = useState<string | null>(null)
+  const [sigKey, setSigKey] = useState<string | null>(null)
+  const [aiKey, setAiKey] = useState<string | null>(null)
   const [error, setError] = useState("")
 
   const [searchResults, setSearchResults] = useState<SearchItem[]>([])
   const [showSearchDropdown, setShowSearchDropdown] = useState(false)
   const [searchLoading, setSearchLoading] = useState(false)
   const searchRef = useRef<HTMLDivElement | null>(null)
+  /** 切換股票時遞增，避免慢請求回來覆寫較新標的 */
+  const stockFetchSeqRef = useRef(0)
+  const peerFetchSeqRef = useRef(0)
+  const lastFetchedStockKeyRef = useRef<string | null>(null)
+  const lastFetchedChartIntervalRef = useRef<typeof chartInterval>(chartInterval)
 
   const [techScoreMin, setTechScoreMin] = useState(60)
   const [screenerFilterResult, setScreenerFilterResult] = useState<any[]>([])
@@ -171,16 +232,15 @@ export default function Home() {
   const [aiPanelCollapsed, setAiPanelCollapsed] = useState(true)
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
-  const [isDraggingSidebar, setIsDraggingSidebar] = useState(false)
+
+  /** 固定行動版（iPhone）版面 */
+  const isLg = false
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false)
 
   const [aiMode, setAiMode] = useState<"daily" | "watchlist">("daily")
 
-  const [rightPanelWidth, setRightPanelWidth] = useState(420)
-  const [isRightPanelCollapsed, setIsRightPanelCollapsed] = useState(false)
-  const [isDraggingRightPanel, setIsDraggingRightPanel] = useState(false)
-
-  const [isLg, setIsLg] = useState(false)
-  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false)
+  /** 行動版預設收合底部「技術面」，避免遮住主內容 */
+  const [isRightPanelCollapsed, setIsRightPanelCollapsed] = useState(true)
 
   const [aiData, setAiData] = useState<AIAnalyzeResponse | null>(null)
   const [multiTimeframe, setMultiTimeframe] = useState<any[]>([])
@@ -197,58 +257,6 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<
     "overview" | "fundamental" | "ranking" | "screener" | "ai" | "crypto" | "debug"
   >("overview")
-
-  useEffect(() => {
-    function onMouseMove(e: MouseEvent) {
-      if (isDraggingRightPanel && isLg && !isRightPanelCollapsed) {
-        const nextWidth = Math.max(280, Math.min(720, window.innerWidth - e.clientX))
-        setRightPanelWidth(nextWidth)
-      }
-
-      if (isDraggingSidebar && isLg && !isSidebarCollapsed) {
-        const nextWidth = Math.max(220, Math.min(420, e.clientX))
-        setSidebarWidth(nextWidth)
-      }
-    }
-
-    function onMouseUp() {
-      setIsDraggingRightPanel(false)
-      setIsDraggingSidebar(false)
-    }
-
-    window.addEventListener("mousemove", onMouseMove)
-    window.addEventListener("mouseup", onMouseUp)
-
-    return () => {
-      window.removeEventListener("mousemove", onMouseMove)
-      window.removeEventListener("mouseup", onMouseUp)
-    }
-  }, [isDraggingRightPanel, isRightPanelCollapsed, isDraggingSidebar, isSidebarCollapsed, isLg])
-
-  useEffect(() => {
-    const mq = window.matchMedia("(min-width: 1024px)")
-    const apply = () => {
-      const lg = mq.matches
-      setIsLg(lg)
-      if (lg) {
-        setMobileDrawerOpen(false)
-      } else {
-        setIsRightPanelCollapsed(true)
-      }
-    }
-    apply()
-    mq.addEventListener("change", apply)
-    return () => mq.removeEventListener("change", apply)
-  }, [])
-
-  useEffect(() => {
-    if (isLg || !mobileDrawerOpen) return
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setMobileDrawerOpen(false)
-    }
-    window.addEventListener("keydown", onKey)
-    return () => window.removeEventListener("keydown", onKey)
-  }, [isLg, mobileDrawerOpen])
 
   const refreshUser = useCallback(async () => {
     try {
@@ -269,8 +277,6 @@ export default function Home() {
       return
     }
 
-    setCheckedAuth(true)
-
     ;(async () => {
       try {
         const u = await fetchCurrentUser()
@@ -278,13 +284,20 @@ export default function Home() {
         setAiAccess(!!u.ai_access)
       } catch {
         setAiAccess(false)
-        clearToken()
-        router.replace("/login?msg=" + encodeURIComponent("登入已過期，請重新登入"))
-        return
       }
+      setCheckedAuth(true)
       void loadWatchlist()
     })()
   }, [router])
+
+  useEffect(() => {
+    if (isLg || !mobileDrawerOpen) return
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setMobileDrawerOpen(false)
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [isLg, mobileDrawerOpen])
 
   async function runScanner(mode?: "opportunities" | "leaderboard") {
     const nextMode = mode ?? scannerMode
@@ -363,9 +376,12 @@ export default function Home() {
         .catch(() => setWatchlistOverview([]))
 
       if (finalMapped.length > 0) {
-        setSelected(finalMapped[0])
-        setMarketPool(finalMapped[0].market)
-        setSymbolInput(finalMapped[0].symbol)
+        // 預設優先台股，否則用清單第一筆
+        const firstTw = finalMapped.find((w) => w.market === "TW")
+        const pick = firstTw ?? finalMapped[0]
+        setSelected(pick)
+        setMarketPool(pick.market)
+        setSymbolInput(pick.symbol)
       }
     } catch (err) {
       console.error(err)
@@ -375,6 +391,33 @@ export default function Home() {
         return
       }
       setError(err instanceof Error ? err.message : "載入 watchlist 失敗")
+    }
+  }
+
+  async function handleWatchlistReorder(newPoolItems: WatchItem[]) {
+    const orderedIds = newPoolItems.map((w) => Number(w.id)).filter((n) => Number.isFinite(n))
+    if (orderedIds.length !== newPoolItems.length) {
+      await loadWatchlist()
+      return
+    }
+    setWatchlist((prev) => {
+      let i = 0
+      return prev.map((w) => {
+        if (w.market !== marketPool) return w
+        const next = newPoolItems[i++]
+        return next ?? w
+      })
+    })
+    try {
+      await reorderWatchlist(marketPool, orderedIds)
+    } catch (err) {
+      console.error(err)
+      await loadWatchlist()
+      if (handleAuthError(err)) {
+        router.push("/login?msg=登入已過期，請重新登入")
+        return
+      }
+      alert(err instanceof Error ? err.message : "自選股排序失敗")
     }
   }
 
@@ -539,67 +582,207 @@ export default function Home() {
     }
   }, [aiMode, checkedAuth, marketPool])
 
+  const selectedStockKey = useMemo(
+    () => `${selected.symbol}-${selected.market}`,
+    [selected.symbol, selected.market]
+  )
+
+  const optimisticTitle = useMemo(() => {
+    const w = watchlist.find((x) => x.symbol === selected.symbol && x.market === selected.market)
+    return formatStockLabel(selected.symbol, w?.name ?? null, selected.market)
+  }, [watchlist, selected.symbol, selected.market])
+
+  const detailForSelection = useMemo(() => {
+    if (detailKey !== selectedStockKey) return null
+    return detailData
+  }, [detailData, detailKey, selectedStockKey])
+
+  const quoteForSelection = useMemo(() => {
+    if (quoteKey !== selectedStockKey) return null
+    return quote
+  }, [quote, quoteKey, selectedStockKey])
+
+  const aiForSelection = useMemo(() => {
+    if (aiKey !== selectedStockKey) return null
+    return aiData
+  }, [aiData, aiKey, selectedStockKey])
+
+  /** 標題永遠與當前選中一致：僅在 detail 已對應本檔標的時才用後端 page_title */
+  const headerTitle = useMemo(() => {
+    if (detailKey !== selectedStockKey) return optimisticTitle
+    if (detailData) {
+      return detailData.page_title || detailData.name || optimisticTitle
+    }
+    return optimisticTitle
+  }, [detailData, detailKey, selectedStockKey, optimisticTitle])
+
+  const isDetailPending = detailKey !== selectedStockKey && detailLoading
+  const isQuotePending = quoteKey !== selectedStockKey && quoteLoading
+  const isHeaderPricePending = isQuotePending || (isDetailPending && !quoteForSelection)
+  const isAiBlockPending = aiLoading && aiKey !== selectedStockKey
+
   useEffect(() => {
-    async function fetchData() {
-      setLoading(true)
+    if (!checkedAuth) return
+    if (!selected.symbol) return
+
+    const mySeq = ++stockFetchSeqRef.current
+    const sym = selected.symbol
+    const mkt = selected.market
+    const iv = chartInterval
+    const key = `${sym}-${mkt}`
+
+    const stockChanged = lastFetchedStockKeyRef.current !== key
+    const intervalOnly =
+      !stockChanged && lastFetchedChartIntervalRef.current !== iv
+
+    const runLayer1QuoteDetail = () => {
       setError("")
-      setAiData(null)
-      setMultiTimeframe([])
-      setSignalTable([])
-      setDetailData(null)
+      setQuoteLoading(true)
+      setDetailLoading(true)
+
+      void Promise.allSettled([
+        stockFetchDedupe(`quote:${key}`, () => getQuote(sym, mkt)),
+        stockFetchDedupe(`detail:${key}`, () => getDetail(sym, mkt)),
+      ])
+        .then((results) => {
+          if (stockFetchSeqRef.current !== mySeq) return
+          const [qr, dr] = results
+          if (qr.status === "fulfilled") {
+            setQuote(qr.value as QuoteData)
+            setQuoteKey(key)
+          } else {
+            console.warn("getQuote:", qr.reason)
+            setQuoteKey(null)
+          }
+          if (dr.status === "fulfilled") {
+            setDetailData(dr.value as DetailData)
+            setDetailKey(key)
+          } else {
+            console.warn("getDetail:", dr.reason)
+            setDetailKey(null)
+          }
+        })
+        .finally(() => {
+          if (stockFetchSeqRef.current !== mySeq) return
+          setQuoteLoading(false)
+          setDetailLoading(false)
+        })
+    }
+
+    const runLayer2ChartMtfSig = () => {
+      setChartLoading(true)
+      setMtfLoading(true)
+      setSigLoading(true)
       setMtfError(null)
       setSigError(null)
 
-      const [quoteResult, detailResult] = await Promise.allSettled([
-        getQuote(selected.symbol, selected.market),
-        getDetail(selected.symbol, selected.market),
+      void Promise.allSettled([
+        stockFetchDedupe(`chart:${key}:${iv}`, () => getChart(sym, mkt, iv)),
+        stockFetchDedupe(`mtf:${key}`, () => getMultiTimeframe(sym, mkt)),
+        stockFetchDedupe(`sig:${key}`, () => getSignalTable(sym, mkt)),
       ])
-      setQuote(quoteResult.status === "fulfilled" ? quoteResult.value : null)
-      setDetailData(detailResult.status === "fulfilled" ? detailResult.value : null)
-      if (quoteResult.status === "rejected") console.warn("getQuote:", quoteResult.reason?.message)
-      if (detailResult.status === "rejected") console.warn("getDetail:", detailResult.reason?.message)
+        .then((results) => {
+          if (stockFetchSeqRef.current !== mySeq) return
 
-      try {
-        const chartJson = await getChart(selected.symbol, selected.market, chartInterval)
-        setChartData(Array.isArray(chartJson.candles) ? chartJson.candles : [])
-      } catch (err) {
-        console.error("getChart error:", err)
-        setChartData([])
-      }
+          const [chartResult, mtfResult, sigResult] = results
 
-      try {
-        const aiJson = await analyzeAI(selected.symbol, selected.market)
-        setAiData(aiJson)
-      } catch (err) {
-        console.error("analyzeAI error:", err)
-        setAiData(null)
-      }
+          if (chartResult.status === "fulfilled") {
+            const chartJson = chartResult.value as { candles?: ChartCandle[] }
+            setChartData(Array.isArray(chartJson.candles) ? chartJson.candles : [])
+            setChartKey(key)
+          } else {
+            console.error("getChart error:", chartResult.status === "rejected" ? chartResult.reason : "")
+            setChartData([])
+            setChartKey(null)
+          }
 
-      const [mtfResult, sigResult] = await Promise.allSettled([
-        getMultiTimeframe(selected.symbol, selected.market),
-        getSignalTable(selected.symbol, selected.market),
-      ])
-      setMultiTimeframe(mtfResult.status === "fulfilled" && Array.isArray(mtfResult.value) ? mtfResult.value : [])
-      setSignalTable(sigResult.status === "fulfilled" && Array.isArray(sigResult.value) ? sigResult.value : [])
-      setMtfError(mtfResult.status === "rejected" ? (mtfResult.reason?.message ?? "未知錯誤") : null)
-      setSigError(sigResult.status === "rejected" ? (sigResult.reason?.message ?? "未知錯誤") : null)
+          setMultiTimeframe(
+            mtfResult.status === "fulfilled" && Array.isArray(mtfResult.value) ? mtfResult.value : []
+          )
+          setMtfKey(mtfResult.status === "fulfilled" ? key : null)
+          setMtfError(mtfResult.status === "rejected" ? (mtfResult.reason?.message ?? "未知錯誤") : null)
 
-      setLoading(false)
+          setSignalTable(
+            sigResult.status === "fulfilled" && Array.isArray(sigResult.value) ? sigResult.value : []
+          )
+          setSigKey(sigResult.status === "fulfilled" ? key : null)
+          setSigError(sigResult.status === "rejected" ? (sigResult.reason?.message ?? "未知錯誤") : null)
+        })
+        .finally(() => {
+          if (stockFetchSeqRef.current !== mySeq) return
+          setChartLoading(false)
+          setMtfLoading(false)
+          setSigLoading(false)
+        })
     }
 
-    if (!checkedAuth) return
-    if (selected.symbol) {
-      void fetchData()
+    const runLayer3Ai = () => {
+      setAiLoading(true)
+      stockFetchDedupe(`ai:${key}`, () => analyzeAI(sym, mkt))
+        .then((res) => {
+          if (stockFetchSeqRef.current !== mySeq) return
+          setAiData(res as AIAnalyzeResponse)
+          setAiKey(key)
+        })
+        .catch((e) => {
+          console.error("analyzeAI error:", e)
+        })
+        .finally(() => {
+          if (stockFetchSeqRef.current !== mySeq) return
+          setAiLoading(false)
+        })
     }
-  }, [selected, checkedAuth, chartInterval])
+
+    if (intervalOnly) {
+      lastFetchedChartIntervalRef.current = iv
+      setChartLoading(true)
+      setMtfError(null)
+      setSigError(null)
+      stockFetchDedupe(`chart:${key}:${iv}`, () => getChart(sym, mkt, iv))
+        .then((chartJson) => {
+          if (stockFetchSeqRef.current !== mySeq) return
+          const j = chartJson as { candles?: ChartCandle[] }
+          setChartData(Array.isArray(j.candles) ? j.candles : [])
+          setChartKey(key)
+        })
+        .catch((e) => {
+          console.error("getChart error:", e)
+          if (stockFetchSeqRef.current !== mySeq) return
+          setChartData([])
+        })
+        .finally(() => {
+          if (stockFetchSeqRef.current !== mySeq) return
+          setChartLoading(false)
+        })
+      return
+    }
+
+    lastFetchedStockKeyRef.current = key
+    lastFetchedChartIntervalRef.current = iv
+
+    runLayer1QuoteDetail()
+    runLayer2ChartMtfSig()
+    // 第三層延後到下一個 macrotask，讓 quote/detail 與背景 layer2 先進入佇列，避免與首屏競爭
+    window.setTimeout(() => runLayer3Ai(), 0)
+  }, [selected.symbol, selected.market, chartInterval, checkedAuth])
 
   useEffect(() => {
     if (activeTab !== "fundamental" || (selected.market !== "TW" && selected.market !== "US")) return
+    const mySeq = ++peerFetchSeqRef.current
     setLoadingPeers(true)
     getPeers(selected.symbol, selected.market, 6)
-      .then((r) => setPeers(r.peers || []))
-      .catch(() => setPeers([]))
-      .finally(() => setLoadingPeers(false))
+      .then((r) => {
+        if (peerFetchSeqRef.current !== mySeq) return
+        setPeers(r.peers || [])
+      })
+      .catch(() => {
+        if (peerFetchSeqRef.current !== mySeq) return
+        setPeers([])
+      })
+      .finally(() => {
+        if (peerFetchSeqRef.current !== mySeq) return
+        setLoadingPeers(false)
+      })
   }, [activeTab, selected.symbol, selected.market])
 
   useEffect(() => {
@@ -756,15 +939,17 @@ export default function Home() {
         : "尚未載入 AI 今日機會"
       : "顯示自選股技術分析，按「AI 深度分析」才呼叫 AI"
 
-  const showSidebarFull = !isLg || !isSidebarCollapsed
-
   if (!checkedAuth) {
-    return <DashboardBootSkeleton />
+    return (
+      <div className="flex min-h-dvh items-center justify-center bg-black text-white">
+        驗證登入中...
+      </div>
+    )
   }
 
   return (
-    <div className="dashboard-enter flex h-screen min-h-0 bg-black text-white overflow-hidden flex-col">
-      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
+    <div className="dashboard-enter flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-black text-white">
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
         {!isLg && mobileDrawerOpen ? (
           <button
             type="button"
@@ -774,65 +959,64 @@ export default function Home() {
           />
         ) : null}
 
+        <div className="relative flex min-h-0 flex-1 overflow-hidden">
+      <div
+        className={`flex shrink-0 flex-col p-3 transition-[transform,background-color,border-color] duration-200 ease-out ${
+          isLg
+            ? `relative z-20 ${isSidebarCollapsed ? "border-transparent bg-black" : "border-zinc-800 bg-zinc-900"} border-r`
+            : `absolute bottom-0 left-0 top-0 z-[70] w-[min(88vw,20rem)] border-r border-zinc-800 bg-zinc-900 shadow-2xl`
+        } ${!isLg && !mobileDrawerOpen ? "pointer-events-none -translate-x-full" : ""} ${
+          !isLg && mobileDrawerOpen ? "translate-x-0" : ""
+        } ${isLg ? "translate-x-0" : ""}`}
+        style={isLg ? { width: isSidebarCollapsed ? 64 : SIDEBAR_WIDTH_PX } : undefined}
+      >
         <div
-          className={`flex shrink-0 flex-col p-3 transition-[transform,background-color,border-color] duration-200 ease-out lg:relative lg:z-20 ${
-            isLg
-              ? isSidebarCollapsed
-                ? "border-transparent bg-black lg:border-r"
-                : "border-zinc-800 bg-zinc-900 lg:border-r"
-              : "absolute bottom-0 left-0 top-0 z-[70] w-[min(88vw,20rem)] border-r border-zinc-800 bg-zinc-900 shadow-2xl lg:relative lg:shadow-none"
-          } ${!isLg && !mobileDrawerOpen ? "pointer-events-none -translate-x-full" : ""} ${
-            !isLg && mobileDrawerOpen ? "translate-x-0" : ""
-          } lg:pointer-events-auto lg:translate-x-0`}
-          style={isLg ? { width: isSidebarCollapsed ? 64 : sidebarWidth } : undefined}
+          className={`mb-4 flex items-center gap-2 ${
+            isLg && isSidebarCollapsed ? "justify-center" : "justify-between"
+          }`}
         >
-          <div
-            className={`mb-4 flex items-center gap-2 ${
-              isLg && isSidebarCollapsed ? "justify-center" : "justify-between"
-            }`}
-          >
-            {!isLg ? (
-              <span className="truncate text-sm font-semibold text-zinc-300">選股與自選</span>
-            ) : showSidebarFull ? (
-              <h2 className="text-2xl font-bold" />
-            ) : null}
+          {!isLg ? (
+            <span className="truncate text-sm font-semibold text-zinc-300">選股與自選</span>
+          ) : !isSidebarCollapsed ? (
+            <h2 className="text-2xl font-bold" />
+          ) : null}
 
-            <div className="flex shrink-0 items-center gap-1">
-              {!isLg ? (
-                <button
-                  type="button"
-                  onClick={() => setMobileDrawerOpen(false)}
-                  className="flex h-11 w-11 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900 hover:bg-zinc-800"
-                  aria-label="關閉"
-                >
-                  <X size={18} />
-                </button>
-              ) : null}
+          <div className="flex shrink-0 items-center gap-1">
+            {!isLg ? (
               <button
                 type="button"
-                onClick={() => {
-                  if (!isLg) setMobileDrawerOpen(false)
-                  else setIsSidebarCollapsed((prev) => !prev)
-                }}
+                onClick={() => setMobileDrawerOpen(false)}
                 className="flex h-11 w-11 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900 hover:bg-zinc-800"
-                title={isLg ? (isSidebarCollapsed ? "展開左側欄" : "收合左側欄") : "關閉"}
+                aria-label="關閉"
               >
-                {isLg ? (
-                  isSidebarCollapsed ? (
-                    <PanelLeftOpen size={18} />
-                  ) : (
-                    <PanelLeftClose size={18} />
-                  )
+                <X size={18} />
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => {
+                if (!isLg) setMobileDrawerOpen(false)
+                else setIsSidebarCollapsed((prev) => !prev)
+              }}
+              className="flex h-10 w-10 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900 hover:bg-zinc-800"
+              title={isLg ? (isSidebarCollapsed ? "展開左側欄" : "收合左側欄") : "關閉"}
+            >
+              {isLg ? (
+                isSidebarCollapsed ? (
+                  <PanelLeftOpen size={18} />
                 ) : (
                   <PanelLeftClose size={18} />
-                )}
-              </button>
-            </div>
+                )
+              ) : (
+                <PanelLeftClose size={18} />
+              )}
+            </button>
           </div>
+        </div>
 
         <AccountSidebarCard
           user={currentUser}
-          collapsed={isLg && isSidebarCollapsed}
+          collapsed={isSidebarCollapsed}
           onOpenMenu={() => setAccountMenuOpen(true)}
           onRefreshUser={refreshUser}
           onLogout={() => {
@@ -841,7 +1025,7 @@ export default function Home() {
           }}
         />
 
-        {showSidebarFull && (
+        {!isSidebarCollapsed && (
           <>
             <div className="mb-4 space-y-2">
               <div className="flex gap-2">
@@ -878,7 +1062,7 @@ export default function Home() {
                 onClick={() => {
                   if (!isLg) setMobileDrawerOpen(false)
                 }}
-                className="flex w-full items-center justify-center rounded-xl border border-violet-700/60 bg-violet-950/40 px-3 py-3 text-sm font-medium text-violet-200 hover:bg-violet-900/50 sm:py-2.5"
+                className="flex w-full items-center justify-center rounded-xl border border-violet-700/60 bg-violet-950/40 px-3 py-2.5 text-sm font-medium text-violet-200 hover:bg-violet-900/50 sm:py-2.5"
               >
                 付費方案 · Premium
               </Link>
@@ -933,77 +1117,31 @@ export default function Home() {
               </button>
             </div>
 
-            <div className="mt-3 max-h-[calc(100vh-220px)] overflow-y-auto space-y-1 pr-1">
-              {filteredWatchlist.map((item) => {
-                const active = selected.symbol === item.symbol && selected.market === item.market
-
-                return (
-                  <div
-                    key={`${item.market}-${item.symbol}-${item.id ?? "x"}`}
-                    className={`group rounded-md border px-2 py-2 transition ${
-                      active
-                        ? "bg-zinc-700/80 border-zinc-500"
-                        : "bg-zinc-900 border-transparent hover:bg-zinc-800"
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelected(item)
-                          setSymbolInput(item.symbol)
-                          setMarketPool(item.market)
-                          setShowSearchDropdown(false)
-                          if (!isLg) setMobileDrawerOpen(false)
-                        }}
-                        className="flex-1 min-w-0 text-left"
-                      >
-                        <div className="text-sm font-semibold leading-5 truncate">
-                          {formatStockLabel(item.symbol, item.name, item.market)}
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-[11px] text-zinc-400 leading-4 truncate">{item.market}</span>
-                          {(() => {
-                            const ov = watchlistOverview.find((o) => o.id === item.id)
-                            const pct = ov?.change_percent
-                            if (pct == null) return null
-                            const isUp = (pct ?? 0) >= 0
-                            return (
-                              <span className={`text-[11px] font-medium ${isUp ? "text-green-400" : "text-red-400"}`}>
-                                {isUp ? "+" : ""}{Number(pct).toFixed(2)}%
-                              </span>
-                            )
-                          })()}
-                        </div>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteWatchlist(item)}
-                        className="shrink-0 text-[11px] text-zinc-500 opacity-100 transition hover:text-red-400 lg:opacity-0 lg:group-hover:opacity-100"
-                        title="移除"
-                      >
-                        刪除
-                      </button>
-                    </div>
-                  </div>
-                )
-              })}
+            <div className="mt-3 max-h-[calc(100vh-220px)] overflow-y-auto pr-1">
+              <p className="text-[11px] text-zinc-500 mb-2 px-0.5">拖曳左側 ⋮⋮ 可調整順序</p>
+              <WatchlistSortableList
+                items={filteredWatchlist}
+                selected={selected}
+                formatLabel={(sym, name, mkt) => formatStockLabel(sym, name ?? null, mkt)}
+                watchlistOverview={watchlistOverview}
+                onSelectItem={(item) => {
+                  setSelected(item)
+                  setSymbolInput(item.symbol)
+                  setMarketPool(item.market)
+                  setShowSearchDropdown(false)
+                  if (!isLg) setMobileDrawerOpen(false)
+                }}
+                onDeleteItem={(item) => void handleDeleteWatchlist(item)}
+                onReorder={handleWatchlistReorder}
+              />
             </div>
           </>
         )}
 
-        {isLg && showSidebarFull ? (
-          <div
-            onMouseDown={() => setIsDraggingSidebar(true)}
-            className="absolute right-0 top-0 z-10 hidden h-full w-2 cursor-col-resize border-r border-zinc-700 hover:border-zinc-500 hover:bg-zinc-600/30 lg:block"
-            title="拖曳調整左側欄寬度"
-          />
-        ) : null}
       </div>
 
       <div
-        className={`relative z-10 flex min-h-0 min-w-0 flex-1 flex-col lg:min-w-0 ${
+        className={`relative z-10 flex min-h-0 min-w-0 flex-1 flex-col ${
           !isLg && mobileDrawerOpen ? "pointer-events-none" : ""
         }`}
       >
@@ -1030,92 +1168,169 @@ export default function Home() {
         >
         {/* Header & Metadata */}
         <div className="mb-4">
-          <h1 className="text-2xl font-bold text-white sm:text-3xl">
-            {detailData?.name || quote?.name || "Loading..."}
+          <h1 className="text-3xl font-bold text-white flex items-center gap-3 flex-wrap">
+            {headerTitle}
+            {isDetailPending ? (
+              <SkeletonBar className="h-7 w-24 inline-block align-middle" aria-hidden />
+            ) : null}
           </h1>
-          <div className="mt-1 text-sm text-zinc-400">
-            代號: {detailData?.raw_symbol || selected.symbol} | 市場: {detailData?.market || "-"} | 產業: {detailData?.display_industry || detailData?.industry || "-"}
+          <div className="mt-1 text-sm text-zinc-400 flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span>代號: {detailForSelection?.code ?? detailForSelection?.symbol ?? selected.symbol}</span>
+            <span className="text-zinc-600">|</span>
+            {isDetailPending ? (
+              <>
+                <span>市場:</span>
+                <SkeletonBar className="h-4 w-12 inline-block align-middle" />
+                <span className="text-zinc-600">|</span>
+                <span>產業:</span>
+                <SkeletonBar className="h-4 w-28 inline-block align-middle" />
+              </>
+            ) : (
+              <span>
+                市場: {detailForSelection?.market ?? "—"} | 產業: {detailForSelection?.display_industry || detailForSelection?.industry || "—"}
+              </span>
+            )}
           </div>
           <div className="mt-2 flex flex-wrap gap-2">
-            <span className="px-2 py-1 rounded-md text-xs bg-zinc-800 border border-zinc-700 text-zinc-300">
-              資料品質 {detailData?.data_quality || "-"}
+            <span className="px-2 py-1 rounded-md text-xs bg-zinc-800 border border-zinc-700 text-zinc-300 inline-flex items-center gap-2 min-h-[1.75rem]">
+              資料品質{" "}
+              {isDetailPending ? <SkeletonBar className="h-3 w-16 inline-block" /> : detailForSelection?.data_quality ?? "—"}
             </span>
-            <span className="px-2 py-1 rounded-md text-xs bg-zinc-800 border border-zinc-700 text-zinc-300">
-              顯示週期 {detailData?.interval || "1d"}
+            <span className="px-2 py-1 rounded-md text-xs bg-zinc-800 border border-zinc-700 text-zinc-300 inline-flex items-center gap-2 min-h-[1.75rem]">
+              顯示週期{" "}
+              {isDetailPending ? <SkeletonBar className="h-3 w-10 inline-block" /> : detailForSelection?.interval || "1d"}
             </span>
-            <span className="px-2 py-1 rounded-md text-xs bg-zinc-800 border border-zinc-700 text-zinc-300">
-              抓取 period {detailData?.period || "-"}
+            <span className="px-2 py-1 rounded-md text-xs bg-zinc-800 border border-zinc-700 text-zinc-300 inline-flex items-center gap-2 min-h-[1.75rem]">
+              抓取 period{" "}
+              {isDetailPending ? <SkeletonBar className="h-3 w-14 inline-block" /> : detailForSelection?.period ?? "—"}
             </span>
-            <span className="px-2 py-1 rounded-md text-xs bg-zinc-800 border border-zinc-700 text-zinc-300">
-              型態 {aiData?.quick_summary?.patterns?.[0] || "-"}
+            <span className="px-2 py-1 rounded-md text-xs bg-zinc-800 border border-zinc-700 text-zinc-300 inline-flex items-center gap-2 min-h-[1.75rem]">
+              型態{" "}
+              {isAiBlockPending ? (
+                <SkeletonBar className="h-3 w-20 inline-block" />
+              ) : (
+                aiForSelection?.quick_summary?.patterns?.[0] ?? "—"
+              )}
             </span>
           </div>
         </div>
 
         {/* Price & Market Metrics */}
-        <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:gap-6">
+        <div className="flex flex-wrap gap-6 mb-6">
           <div>
-            <div className="text-xl font-bold sm:text-2xl">現價 {detailData?.currency || "USD"} {detailData?.price ?? quote?.price ?? "-"}</div>
-            <div className={`mt-1 text-sm ${(quote?.change ?? 0) >= 0 ? "text-green-400" : "text-red-400"}`}>
-              {(quote?.change ?? 0) >= 0 ? "↑" : "↓"} {quote?.change ?? "-"} ({(quote?.change_percent ?? 0).toFixed(2)}%)
+            <div className="text-2xl font-bold flex items-baseline gap-2 flex-wrap min-h-[2.25rem]">
+              <span className="text-zinc-500 text-lg">現價</span>
+              {isHeaderPricePending ? (
+                <>
+                  <SkeletonBar className="h-9 w-40" />
+                  <SkeletonBar className="h-7 w-24" />
+                </>
+              ) : (
+                <>
+                  <span>
+                    {detailForSelection?.currency || "USD"}{" "}
+                    {detailForSelection?.price ?? quoteForSelection?.price ?? "—"}
+                  </span>
+                </>
+              )}
+            </div>
+            <div
+              className={`text-sm mt-1 min-h-[1.25rem] ${
+                quoteForSelection
+                  ? (quoteForSelection.change ?? 0) >= 0
+                    ? "text-green-400"
+                    : "text-red-400"
+                  : "text-zinc-500"
+              }`}
+            >
+              {quoteForSelection ? (
+                `${(quoteForSelection.change ?? 0) >= 0 ? "↑" : "↓"} ${quoteForSelection.change} (${(quoteForSelection.change_percent ?? 0).toFixed(2)}%)`
+              ) : isQuotePending ? (
+                <SkeletonBar className="h-4 w-36" />
+              ) : null}
             </div>
           </div>
-          <div className="border-t border-zinc-700 pt-4 sm:border-l sm:border-t-0 sm:pl-6 sm:pt-0">
-            <div className="text-sm text-zinc-400">52週高 / 低</div>
-            <div className="font-semibold">
-              {detailData?.fifty_two_week_high != null ? detailData.fifty_two_week_high.toFixed(2) : "-"} / {detailData?.fifty_two_week_low != null ? detailData.fifty_two_week_low.toFixed(2) : "-"}
+          <div className="border-l border-zinc-700 pl-6">
+            <div className="text-zinc-400 text-sm">52週高 / 低</div>
+            <div className="font-semibold min-h-[1.5rem]">
+              {isDetailPending ? (
+                <SkeletonBar className="h-5 w-36 mt-1" />
+              ) : (
+                <>
+                  {detailForSelection?.fifty_two_week_high != null ? detailForSelection.fifty_two_week_high.toFixed(2) : "—"} /{" "}
+                  {detailForSelection?.fifty_two_week_low != null ? detailForSelection.fifty_two_week_low.toFixed(2) : "—"}
+                </>
+              )}
             </div>
           </div>
-          <div className="border-t border-zinc-700 pt-4 sm:border-l sm:border-t-0 sm:pl-6 sm:pt-0">
-            <div className="text-sm text-zinc-400">市值</div>
-            <div className="font-semibold">
-              {detailData?.market_cap != null
-                ? detailData.market_cap >= 1e12
-                  ? `${(detailData.market_cap / 1e12).toFixed(2)}T`
-                  : detailData.market_cap >= 1e9
-                  ? `${(detailData.market_cap / 1e9).toFixed(2)}B`
-                  : detailData.market_cap >= 1e6
-                  ? `${(detailData.market_cap / 1e6).toFixed(2)}M`
-                  : detailData.market_cap.toFixed(0)
-                : "-"}
+          <div className="border-l border-zinc-700 pl-6">
+            <div className="text-zinc-400 text-sm">市值</div>
+            <div className="font-semibold min-h-[1.5rem]">
+              {isDetailPending ? (
+                <SkeletonBar className="h-5 w-24 mt-1" />
+              ) : detailForSelection?.market_cap != null ? (
+                detailForSelection.market_cap >= 1e12
+                  ? `${(detailForSelection.market_cap / 1e12).toFixed(2)}T`
+                  : detailForSelection.market_cap >= 1e9
+                  ? `${(detailForSelection.market_cap / 1e9).toFixed(2)}B`
+                  : detailForSelection.market_cap >= 1e6
+                  ? `${(detailForSelection.market_cap / 1e6).toFixed(2)}M`
+                  : detailForSelection.market_cap.toFixed(0)
+              ) : (
+                "—"
+              )}
             </div>
           </div>
         </div>
 
+        {isAiBlockPending && (
+          <div className="mb-6 rounded-xl border border-zinc-800 bg-zinc-900/50 p-4 space-y-3" role="status" aria-label="AI 分析載入中">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
+                  <SkeletonBar className="h-3 w-14 mb-2" />
+                  <SkeletonBar className="h-5 w-full" />
+                </div>
+              ))}
+            </div>
+            <SkeletonLines rows={2} />
+          </div>
+        )}
+
         {/* Technical & Fundamental Summary */}
-        {aiData?.quick_summary && (
+        {aiForSelection?.quick_summary && (
           <div className="mb-6 flex flex-col gap-3">
             <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
               <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
                 <div className="text-zinc-400 text-xs">整體趨勢</div>
-                <div className="font-semibold">{aiData.quick_summary.trend || "-"}</div>
+                <div className="font-semibold">{aiForSelection.quick_summary.trend || "-"}</div>
               </div>
               <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
                 <div className="text-zinc-400 text-xs">估值評級</div>
-                <div className="font-semibold">{aiData.quick_summary.valuation || "-"}</div>
+                <div className="font-semibold">{aiForSelection.quick_summary.valuation || "-"}</div>
               </div>
               <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
                 <div className="text-zinc-400 text-xs">風險等級</div>
-                <div className="font-semibold">{aiData.quick_summary.risk || "-"}</div>
+                <div className="font-semibold">{aiForSelection.quick_summary.risk || "-"}</div>
               </div>
               <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
                 <div className="text-zinc-400 text-xs">多方訊號</div>
-                <div className="font-semibold">{aiData.quick_summary.bullish?.length ? "有" : "0.0%"}</div>
+                <div className="font-semibold">{aiForSelection.quick_summary.bullish?.length ? "有" : "0.0%"}</div>
               </div>
               <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
                 <div className="text-zinc-400 text-xs">空方訊號</div>
-                <div className="font-semibold">{aiData.quick_summary.bearish?.length ? "有" : "0.0%"}</div>
+                <div className="font-semibold">{aiForSelection.quick_summary.bearish?.length ? "有" : "0.0%"}</div>
               </div>
             </div>
             <div className="bg-blue-950/20 border border-blue-800/50 rounded-xl p-4 text-sm text-blue-100">
-              {aiData.quick_summary.one_line || "-"}
+              {aiForSelection.quick_summary.one_line || "-"}
             </div>
             {(() => {
-              const q = aiData.quick_summary
+              const q = aiForSelection.quick_summary
               const patterns = (q.patterns ?? []).slice(0, 2).join(" / ") || "暫無明確型態"
               const bullish = (q.bullish ?? []).slice(0, 2).join(" ； ") || "資料不足"
               const bearish = (q.bearish ?? []).slice(0, 2).join(" ； ") || "資料不足"
-              const aiBrief = `AI快評：${detailData?.name || selected.symbol}目前偏向${q.trend || "-"}，型態重點為${patterns}。主要優勢：${bullish}。主要風險：${bearish}。`
+              const aiBrief = `AI快評：${detailForSelection?.name || selected.symbol}目前偏向${q.trend || "-"}，型態重點為${patterns}。主要優勢：${bullish}。主要風險：${bearish}。`
               return (
                 <div className="mt-4 bg-violet-950/20 border border-violet-800/50 rounded-xl p-4 text-sm text-violet-100">
                   {aiBrief}
@@ -1152,7 +1367,7 @@ export default function Home() {
           <div className="text-red-400 text-lg">{error}</div>
         ) : (
           <>
-            {activeTab === "overview" && quote && (
+            {activeTab === "overview" && (
             <>
             <div className="bg-zinc-900 rounded-2xl border border-zinc-800 shadow-lg mb-6 overflow-hidden">
               <button
@@ -1184,15 +1399,12 @@ export default function Home() {
                       </button>
                     ))}
                   </div>
-                  {loading && chartData.length === 0 ? (
-                    <div className="flex min-h-[min(55vh,520px)] flex-col items-center justify-center gap-4">
-                      <div className="h-[min(40vh,360px)] w-full max-w-3xl animate-pulse rounded-xl border border-zinc-800/60 bg-zinc-900/40" />
-                      <InlineLoading label="載入 K 線…" />
-                    </div>
-                  ) : chartData.length > 0 ? (
+                  {chartLoading && chartKey !== selectedStockKey ? (
+                    <SkeletonChartBlock />
+                  ) : chartKey === selectedStockKey && chartData.length > 0 ? (
                     <TradingChart data={chartData} />
                   ) : (
-                    <div className="flex min-h-[min(55vh,520px)] items-center justify-center text-zinc-400">
+                    <div className="h-[520px] flex items-center justify-center text-zinc-500 text-sm">
                       沒有 K 線資料
                     </div>
                   )}
@@ -1271,7 +1483,7 @@ export default function Home() {
                     </div>
 
                     {scanning ? (
-                      <InlineLoading label="整理掃描結果…" />
+                      <div className="text-sm text-zinc-400">資料整理中...</div>
                     ) : (scannerMode === "opportunities" ? filteredScannerResult : watchlistScannerItems).length === 0 ? (
                       <div className="text-sm text-zinc-400">
                         {scannerMode === "opportunities"
@@ -1421,7 +1633,7 @@ export default function Home() {
 
                 <div className="p-4">
                   {(aiMode === "daily" ? loadingAiOpportunities : loadingWatchlistTech) ? (
-                    <InlineLoading label="載入清單…" />
+                    <div className="text-sm text-zinc-400">載入中...</div>
                   ) : (aiMode === "daily" ? aiOpportunityItems : watchlistTechItems).length === 0 ? (
                     <div className="text-sm text-zinc-400">
                       {aiMode === "daily"
@@ -1524,21 +1736,48 @@ export default function Home() {
                     <p className="text-sm text-zinc-400 mb-4">Crypto 無 PE/PB 等傳統基本面，以技術面判讀為主。右側「多時間框架總覽」與「技術訊號總表」為主要參考。</p>
                   )}
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                    <div><span className="text-zinc-400 text-sm">PE</span><div className="font-semibold">{detailData?.pe != null ? detailData.pe.toFixed(2) : "-"}</div></div>
-                    <div><span className="text-zinc-400 text-sm">PB</span><div className="font-semibold">{detailData?.pb != null ? detailData.pb.toFixed(2) : "-"}</div></div>
-                    <div><span className="text-zinc-400 text-sm">EPS</span><div className="font-semibold">{detailData?.eps != null ? detailData.eps.toFixed(2) : "-"}</div></div>
-                    <div><span className="text-zinc-400 text-sm">ROE</span><div className="font-semibold">{detailData?.roe != null ? `${(detailData.roe * 100).toFixed(2)}%` : "-"}</div></div>
-                    <div><span className="text-zinc-400 text-sm">毛利率</span><div className="font-semibold">{detailData?.gross != null ? `${(detailData.gross * 100).toFixed(2)}%` : "-"}</div></div>
-                    <div><span className="text-zinc-400 text-sm">營收成長</span><div className="font-semibold">{detailData?.revenue != null ? `${(detailData.revenue * 100).toFixed(2)}%` : "-"}</div></div>
-                    <div><span className="text-zinc-400 text-sm">負債比</span><div className="font-semibold">{detailData?.debt != null ? detailData.debt.toFixed(2) : "-"}</div></div>
-                    <div><span className="text-zinc-400 text-sm">估值評級</span><div className="font-semibold">{aiData?.quick_summary?.valuation || detailData?.valuation || "-"}</div></div>
+                    {isDetailPending ? (
+                      Array.from({ length: 8 }).map((_, i) => <SkeletonMetricCell key={i} />)
+                    ) : (
+                      <>
+                        <div><span className="text-zinc-400 text-sm">PE</span><div className="font-semibold">{detailForSelection?.pe != null ? detailForSelection.pe.toFixed(2) : "—"}</div></div>
+                        <div><span className="text-zinc-400 text-sm">PB</span><div className="font-semibold">{detailForSelection?.pb != null ? detailForSelection.pb.toFixed(2) : "—"}</div></div>
+                        <div><span className="text-zinc-400 text-sm">EPS</span><div className="font-semibold">{detailForSelection?.eps != null ? detailForSelection.eps.toFixed(2) : "—"}</div></div>
+                        <div><span className="text-zinc-400 text-sm">ROE</span><div className="font-semibold">{detailForSelection?.roe != null ? `${(detailForSelection.roe * 100).toFixed(2)}%` : "—"}</div></div>
+                        <div><span className="text-zinc-400 text-sm">毛利率</span><div className="font-semibold">{detailForSelection?.gross != null ? `${(detailForSelection.gross * 100).toFixed(2)}%` : "—"}</div></div>
+                        <div><span className="text-zinc-400 text-sm">營收成長</span><div className="font-semibold">{detailForSelection?.revenue != null ? `${(detailForSelection.revenue * 100).toFixed(2)}%` : "—"}</div></div>
+                        <div><span className="text-zinc-400 text-sm">負債比</span><div className="font-semibold">{detailForSelection?.debt != null ? detailForSelection.debt.toFixed(2) : "—"}</div></div>
+                        <div><span className="text-zinc-400 text-sm">估值評級</span><div className="font-semibold">{aiForSelection?.quick_summary?.valuation || detailForSelection?.valuation || "—"}</div></div>
+                      </>
+                    )}
                   </div>
-                  <div className="mt-3 text-sm text-zinc-400">產業：{detailData?.display_industry || detailData?.industry || "-"}</div>
+                  <div className="mt-3 text-sm text-zinc-400 flex items-center gap-2">
+                    產業：
+                    {isDetailPending ? <SkeletonBar className="h-4 w-40 inline-block" /> : detailForSelection?.display_industry || detailForSelection?.industry || "—"}
+                  </div>
                 </div>
                 <div className="bg-zinc-900 rounded-2xl border border-zinc-800 p-5">
                   <h3 className="text-lg font-bold mb-4">自動同業比較</h3>
                   {loadingPeers ? (
-                    <InlineLoading label="載入同業資料…" />
+                    <div className="overflow-x-auto" role="status" aria-label="同業資料載入中">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="text-zinc-400 border-b border-zinc-700">
+                            <th className="text-left py-2">標的</th>
+                            <th className="text-right py-2">價格</th>
+                            <th className="text-right py-2">漲跌</th>
+                            <th className="text-right py-2">漲跌幅</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td colSpan={4} className="py-2">
+                              <SkeletonPeerTableRows rows={5} />
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
                   ) : peers.length === 0 ? (
                     <div className="text-zinc-400">目前無法取得有效同業資料（僅支援台股、美股）</div>
                   ) : (
@@ -1592,7 +1831,7 @@ export default function Home() {
                   </select>
                 </div>
                 {leaderboardLoading ? (
-                  <InlineLoading label="載入排行榜…" />
+                  <div className="text-zinc-400">載入中...</div>
                 ) : (() => {
                     const marketLabel = marketPool === "TW" ? "台股" : marketPool === "US" ? "美股" : "虛擬貨幣"
                     const items = marketPool === "TW" ? twLeaderboardItems : marketPool === "US" ? usLeaderboardItems : cryptoLeaderboardItems
@@ -1833,21 +2072,27 @@ export default function Home() {
                     <div>
                       <h4 className="mb-2 text-sm font-semibold text-zinc-300">系統快速結論（規則摘要）</h4>
                       <div className="rounded-lg border border-zinc-800 bg-zinc-900/80 p-4 text-sm leading-6 text-zinc-200">
-                        {aiData?.quick_summary?.one_line ? (
-                          <p>{aiData.quick_summary.one_line}</p>
+                        {aiForSelection?.quick_summary?.one_line ? (
+                          <p>{aiForSelection.quick_summary.one_line}</p>
+                        ) : aiLoading && aiKey !== selectedStockKey ? (
+                          <div className="space-y-2 py-1" role="status" aria-label="AI 分析中">
+                            <SkeletonBar className="h-4 w-full" />
+                            <SkeletonBar className="h-4 w-[92%]" />
+                            <SkeletonBar className="h-4 w-4/5" />
+                          </div>
                         ) : (
                           <p className="text-zinc-500">選定標的後會自動載入技術摘要。</p>
                         )}
-                        {aiData?.quick_summary?.bullish?.length ? (
+                        {aiForSelection?.quick_summary?.bullish?.length ? (
                           <div className="mt-2">
                             <span className="text-xs text-green-400">偏多：</span>
-                            {aiData.quick_summary.bullish.join("；")}
+                            {aiForSelection.quick_summary.bullish.join("；")}
                           </div>
                         ) : null}
-                        {aiData?.quick_summary?.bearish?.length ? (
+                        {aiForSelection?.quick_summary?.bearish?.length ? (
                           <div className="mt-1">
                             <span className="text-xs text-red-400">偏空：</span>
-                            {aiData.quick_summary.bearish.join("；")}
+                            {aiForSelection.quick_summary.bearish.join("；")}
                           </div>
                         ) : null}
                       </div>
@@ -1882,15 +2127,15 @@ export default function Home() {
               <div className="bg-zinc-900 rounded-2xl border border-zinc-800 p-5">
                 <h3 className="text-lg font-bold mb-4">資料狀態</h3>
                 <div className="space-y-2 text-sm">
-                  <div className="flex gap-4"><span className="text-zinc-500 w-32">實際使用代號</span><span>{detailData?.symbol || selected.symbol}</span></div>
-                  <div className="flex gap-4"><span className="text-zinc-500 w-32">原始輸入代號</span><span>{detailData?.raw_symbol || selected.symbol}</span></div>
+                  <div className="flex gap-4"><span className="text-zinc-500 w-32">實際使用代號</span><span>{detailForSelection?.symbol || selected.symbol}</span></div>
+                  <div className="flex gap-4"><span className="text-zinc-500 w-32">原始輸入代號</span><span>{detailForSelection?.raw_symbol || selected.symbol}</span></div>
                   <div className="flex gap-4"><span className="text-zinc-500 w-32">資料來源</span><span>{selected.market === "CRYPTO" ? "Bybit API" : "Yahoo Finance"}</span></div>
-                  <div className="flex gap-4"><span className="text-zinc-500 w-32">顯示週期</span><span>{detailData?.interval || "1d"}</span></div>
-                  <div className="flex gap-4"><span className="text-zinc-500 w-32">抓取 interval</span><span>{detailData?.fetch_interval || "1d"}</span></div>
-                  <div className="flex gap-4"><span className="text-zinc-500 w-32">抓取 period</span><span>{detailData?.period || "-"}</span></div>
-                  <div className="flex gap-4"><span className="text-zinc-500 w-32">資料品質</span><span>{detailData?.data_quality || "-"}</span></div>
-                  <div className="flex gap-4"><span className="text-zinc-500 w-32">Sector</span><span>{detailData?.sector || "-"}</span></div>
-                  <div className="flex gap-4"><span className="text-zinc-500 w-32">Industry</span><span>{detailData?.industry || "-"}</span></div>
+                  <div className="flex gap-4"><span className="text-zinc-500 w-32">顯示週期</span><span>{detailForSelection?.interval || "1d"}</span></div>
+                  <div className="flex gap-4"><span className="text-zinc-500 w-32">抓取 interval</span><span>{detailForSelection?.fetch_interval || "1d"}</span></div>
+                  <div className="flex gap-4"><span className="text-zinc-500 w-32">抓取 period</span><span>{detailForSelection?.period || "-"}</span></div>
+                  <div className="flex gap-4"><span className="text-zinc-500 w-32">資料品質</span><span>{detailForSelection?.data_quality || "-"}</span></div>
+                  <div className="flex gap-4"><span className="text-zinc-500 w-32">Sector</span><span>{detailForSelection?.sector || "-"}</span></div>
+                  <div className="flex gap-4"><span className="text-zinc-500 w-32">Industry</span><span>{detailForSelection?.industry || "-"}</span></div>
                 </div>
               </div>
             )}
@@ -1898,22 +2143,19 @@ export default function Home() {
         )}
         </div>
       </div>
+      </div>
 
       <div
-        className={`shrink-0 border-t transition-all duration-200 ${
+        className={`shrink-0 transition-all duration-200 ${
           isLg
-            ? `relative z-20 lg:border-t-0 ${
-                isRightPanelCollapsed
-                  ? "border-transparent bg-black lg:border-l"
-                  : "border-zinc-800 bg-zinc-900 lg:border-l"
-              }`
-            : `fixed bottom-0 left-0 right-0 z-[25] w-full border-zinc-800 bg-zinc-950/98 shadow-[0_-10px_40px_rgba(0,0,0,0.55)] backdrop-blur-sm ${
+            ? `relative z-20 ${isRightPanelCollapsed ? "bg-black" : "bg-zinc-900"}`
+            : `fixed bottom-0 left-0 right-0 z-[25] mx-auto w-full max-w-[430px] border-zinc-800 bg-zinc-950/98 shadow-[0_-10px_40px_rgba(0,0,0,0.55)] backdrop-blur-sm ${
                 isRightPanelCollapsed ? "border-transparent" : "border-t"
               }`
         } ${!isLg && mobileDrawerOpen ? "pointer-events-none" : ""}`}
         style={
           isLg
-            ? { width: isRightPanelCollapsed ? 64 : rightPanelWidth }
+            ? { width: isRightPanelCollapsed ? 64 : RIGHT_PANEL_WIDTH_PX }
             : undefined
         }
       >
@@ -1946,7 +2188,7 @@ export default function Home() {
             <div className="space-y-4">
               <div className="bg-zinc-800 rounded-xl p-4 text-center">
                 <div className="text-zinc-400 text-sm mb-1">Symbol</div>
-                <div className="font-semibold">{selected.symbol}</div>
+                <div className="font-semibold">{detailForSelection?.code ?? detailForSelection?.symbol ?? selected.symbol}</div>
               </div>
 
               <div className="bg-zinc-800 rounded-xl p-4 text-center">
@@ -1954,31 +2196,60 @@ export default function Home() {
                 <div className="font-semibold">{selected.market}</div>
               </div>
 
+              {isAiBlockPending ? (
+                <>
+                  <SkeletonTechCard />
+                  <SkeletonTechCard />
+                  <SkeletonTechCard />
+                  <SkeletonTechCard tall />
+                  <div className="bg-zinc-800 rounded-xl p-4">
+                    <SkeletonBar className="h-3 w-24 mb-3" />
+                    <SkeletonLines rows={3} />
+                  </div>
+                  <div className="bg-zinc-800 rounded-xl p-4">
+                    <SkeletonBar className="h-3 w-28 mb-3" />
+                    <SkeletonLines rows={2} />
+                  </div>
+                  <div className="bg-zinc-800 rounded-xl p-4">
+                    <SkeletonBar className="h-3 w-20 mb-3" />
+                    <SkeletonLines rows={2} />
+                  </div>
+                </>
+              ) : (
+                <>
               <div className="bg-zinc-800 rounded-xl p-4 text-center">
                 <div className="text-zinc-400 text-sm mb-1">技術趨勢</div>
-                <div className="font-semibold">{aiData?.quick_summary?.trend || "Loading..."}</div>
+                <div className="font-semibold">
+                  {aiForSelection?.quick_summary?.trend || "—"}
+                </div>
               </div>
 
               <div className="bg-zinc-800 rounded-xl p-4 text-center">
                 <div className="text-zinc-400 text-sm mb-1">估值 / 強弱</div>
-                <div className="font-semibold">{aiData?.quick_summary?.valuation || "Loading..."}</div>
+                <div className="font-semibold">
+                  {aiForSelection?.quick_summary?.valuation || "—"}
+                </div>
               </div>
 
               <div className="bg-zinc-800 rounded-xl p-4 text-center">
                 <div className="text-zinc-400 text-sm mb-1">技術風險</div>
-                <div className="font-semibold">{aiData?.quick_summary?.risk || "Loading..."}</div>
+                <div className="font-semibold">
+                  {aiForSelection?.quick_summary?.risk || "—"}
+                </div>
               </div>
 
               <div className="bg-zinc-800 rounded-xl p-4 text-center">
                 <div className="text-zinc-400 text-sm mb-2">一句話技術摘要</div>
-                <div className="text-sm leading-6">{aiData?.quick_summary?.one_line || "Loading..."}</div>
+                <div className="text-sm leading-6">
+                  {aiForSelection?.quick_summary?.one_line || "—"}
+                </div>
               </div>
 
               <div className="bg-zinc-800 rounded-xl p-4">
                 <div className="text-zinc-400 text-sm mb-2">偏多訊號</div>
                 <div className="space-y-2">
-                  {aiData?.quick_summary?.bullish?.length ? (
-                    aiData.quick_summary.bullish.map((item, idx) => (
+                  {aiForSelection?.quick_summary?.bullish?.length ? (
+                    aiForSelection.quick_summary.bullish.map((item, idx) => (
                       <div key={idx} className="text-sm leading-5 text-green-300">
                         • {item}
                       </div>
@@ -1992,8 +2263,8 @@ export default function Home() {
               <div className="bg-zinc-800 rounded-xl p-4">
                 <div className="text-zinc-400 text-sm mb-2">偏空 / 風險訊號</div>
                 <div className="space-y-2">
-                  {aiData?.quick_summary?.bearish?.length ? (
-                    aiData.quick_summary.bearish.map((item, idx) => (
+                  {aiForSelection?.quick_summary?.bearish?.length ? (
+                    aiForSelection.quick_summary.bearish.map((item, idx) => (
                       <div key={idx} className="text-sm leading-5 text-red-300">
                         • {item}
                       </div>
@@ -2007,8 +2278,8 @@ export default function Home() {
               <div className="bg-zinc-800 rounded-xl p-4">
                 <div className="text-zinc-400 text-sm mb-2">技術型態</div>
                 <div className="space-y-2">
-                  {aiData?.quick_summary?.patterns?.length ? (
-                    aiData.quick_summary.patterns.map((item, idx) => (
+                  {aiForSelection?.quick_summary?.patterns?.length ? (
+                    aiForSelection.quick_summary.patterns.map((item, idx) => (
                       <div key={idx} className="text-sm leading-5">
                         • {item}
                       </div>
@@ -2018,10 +2289,12 @@ export default function Home() {
                   )}
                 </div>
               </div>
+                </>
+              )}
 
               <div className="bg-zinc-800 rounded-xl p-4">
                 <div className="text-zinc-400 text-sm mb-2">多時間框架總覽（1h / 4h / 1d / 1wk）</div>
-                {multiTimeframe.length > 0 ? (
+                {mtfKey === selectedStockKey && multiTimeframe.length > 0 ? (
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
@@ -2047,17 +2320,26 @@ export default function Home() {
                     </table>
                   </div>
                 ) : (
-                  <div className="text-sm py-2">
-                    <div className="text-zinc-500">載入中或後端未提供資料。</div>
-                    {mtfError && <div className="text-amber-400 mt-1 text-xs">錯誤：{mtfError}</div>}
-                    <div className="text-zinc-600 text-xs mt-1">請確認後端已啟動且從 stock-platform/backend 執行 uvicorn。</div>
+                  <div className="text-sm py-2 space-y-2">
+                    {mtfLoading && mtfKey !== selectedStockKey ? (
+                      <div className="space-y-2" role="status" aria-label="多週期資料載入中">
+                        {Array.from({ length: 5 }).map((_, i) => (
+                          <SkeletonBar key={i} className="h-8 w-full" />
+                        ))}
+                      </div>
+                    ) : (
+                      <>
+                        <div className="text-zinc-500">後端未提供多週期資料。</div>
+                        {mtfError && <div className="text-amber-400 mt-1 text-xs">錯誤：{mtfError}</div>}
+                      </>
+                    )}
                   </div>
                 )}
               </div>
 
               <div className="bg-zinc-800 rounded-xl p-4">
                 <div className="text-zinc-400 text-sm mb-2">技術訊號總表</div>
-                {signalTable.length > 0 ? (
+                {sigKey === selectedStockKey && signalTable.length > 0 ? (
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
@@ -2079,9 +2361,19 @@ export default function Home() {
                     </table>
                   </div>
                 ) : (
-                  <div className="text-sm py-2">
-                    <div className="text-zinc-500">載入中或後端未提供資料。</div>
-                    {sigError && <div className="text-amber-400 mt-1 text-xs">錯誤：{sigError}</div>}
+                  <div className="text-sm py-2 space-y-2">
+                    {sigLoading && sigKey !== selectedStockKey ? (
+                      <div className="space-y-2" role="status" aria-label="技術訊號載入中">
+                        {Array.from({ length: 6 }).map((_, i) => (
+                          <SkeletonBar key={i} className="h-10 w-full" />
+                        ))}
+                      </div>
+                    ) : (
+                      <>
+                        <div className="text-zinc-500">後端未提供訊號表資料。</div>
+                        {sigError && <div className="text-amber-400 mt-1 text-xs">錯誤：{sigError}</div>}
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -2097,11 +2389,6 @@ export default function Home() {
               </button>
             </div>
 
-            <div
-              onMouseDown={() => isLg && setIsDraggingRightPanel(true)}
-              className="absolute left-0 top-0 z-10 hidden h-full w-2 cursor-col-resize border-l border-zinc-700 hover:border-zinc-500 hover:bg-zinc-600/30 active:bg-zinc-500/50 lg:block"
-              title="拖曳調整右側欄寬度"
-            />
           </div>
         )}
       </div>
