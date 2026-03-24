@@ -29,7 +29,7 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="flex min-h-dvh items-center justify-center bg-black px-4 py-8 pb-safe pt-safe text-white">
+    <div className="flex min-h-dvh items-center justify-center bg-black px-4 py-8 pb-safe text-white">
       <div className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-2xl p-8">
         <h1 className="text-3xl font-bold mb-6">註冊</h1>
 

@@ -60,8 +60,9 @@ select {
   padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
 }
 
+/* 頂部安全區：避免按鈕畫在動態島／狀態列底下而無法點擊 */
 .pt-safe {
-  padding-top: env(safe-area-inset-top, 0px);
+  padding-top: max(0px, env(safe-area-inset-top, 0px));
 }
 
 .px-safe {

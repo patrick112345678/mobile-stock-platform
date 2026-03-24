@@ -152,7 +152,7 @@ export function AccountTopBar({
           onClick={() => onMenuOpenChange(false)}
         />
       ) : null}
-      <header className="relative z-[65] flex min-h-0 shrink-0 items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-950/95 px-3 py-1 sm:gap-3 sm:px-4 sm:py-2">
+      <header className="relative z-[65] flex min-h-0 shrink-0 items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-950/95 px-3 py-1.5 sm:gap-3 sm:px-4 sm:py-2">
         <div className="flex min-h-0 min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
           {showNavToggle && onOpenNav ? (
             <button
@@ -176,7 +176,12 @@ export function AccountTopBar({
             {avatarLetter(user?.username ?? "")}
           </button>
           {menuOpen ? (
-            <div className="fixed right-3 top-12 z-[80] w-[min(18rem,calc(100vw-1.5rem))] rounded-xl border border-zinc-700 bg-zinc-900 p-3 shadow-xl sm:right-4 sm:top-14 sm:p-4">
+            <div
+              className="fixed right-3 z-[80] w-[min(18rem,calc(100vw-1.5rem))] rounded-xl border border-zinc-700 bg-zinc-900 p-3 shadow-xl sm:right-4 sm:p-4"
+              style={{
+                top: "max(3.5rem, calc(env(safe-area-inset-top, 0px) + 3.25rem))",
+              }}
+            >
               <div className="mb-3 border-b border-zinc-800 pb-3">
                 <div className="font-semibold text-white">{user?.username ?? "—"}</div>
                 <div className="mt-1 text-xs text-zinc-400">{user?.email || "未綁定 Email"}</div>

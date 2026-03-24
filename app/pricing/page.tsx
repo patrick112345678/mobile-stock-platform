@@ -85,7 +85,7 @@ export default function PricingPage() {
   }
 
   return (
-    <div className="min-h-dvh bg-black pb-safe pt-safe text-white">
+    <div className="min-h-dvh bg-black pb-safe text-white">
       <div className="mx-auto w-full max-w-[430px] px-4 py-8 sm:py-10">
         <div className="mb-10 text-center">
           <p className="text-sm font-medium uppercase tracking-[0.2em] text-zinc-500">Premium</p>

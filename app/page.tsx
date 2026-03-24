@@ -4,7 +4,7 @@ import Link from "next/link"
 
 export default function HomePage() {
   return (
-    <div className="min-h-dvh bg-black pb-safe pt-safe text-white">
+    <div className="min-h-dvh bg-black pb-safe text-white">
       <div className="mx-auto w-full px-4 py-8 sm:px-5 sm:py-12">
         <div className="mb-8 flex flex-col gap-4">
           <div className="text-xl font-bold tracking-tight">AI 股票分析平台</div>

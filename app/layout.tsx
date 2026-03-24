@@ -44,7 +44,7 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-zinc-950 text-foreground`}
       >
-        <div className="iphone-app-shell mx-auto min-h-dvh w-full max-w-[430px] bg-black shadow-[0_0_0_1px_rgba(255,255,255,0.08)]">
+        <div className="iphone-app-shell mx-auto min-h-dvh w-full max-w-[430px] bg-black pt-safe shadow-[0_0_0_1px_rgba(255,255,255,0.08)]">
           {children}
         </div>
       </body>
