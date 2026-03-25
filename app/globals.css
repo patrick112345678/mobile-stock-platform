@@ -31,7 +31,6 @@ body {
     -apple-system,
     BlinkMacSystemFont,
     "SF Pro Text",
-    "SF Pro Display",
     "Segoe UI",
     system-ui,
     sans-serif;
@@ -41,7 +40,6 @@ html {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* 表單至少 16px，減少 iOS 自動放大輸入框 */
 input,
 textarea,
 select {
@@ -60,7 +58,6 @@ select {
   padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
 }
 
-/* 頂部安全區：避免按鈕畫在動態島／狀態列底下而無法點擊 */
 .pt-safe {
   padding-top: max(0px, env(safe-area-inset-top, 0px));
 }
@@ -70,7 +67,6 @@ select {
   padding-right: max(1rem, env(safe-area-inset-right, 0px));
 }
 
-/* 看盤主畫面進入時輕微淡入 */
 @media (prefers-reduced-motion: no-preference) {
   .dashboard-enter {
     animation: dashboard-fade-in 0.22s ease-out;
@@ -107,4 +103,7 @@ select {
   );
   background-size: 200% 100%;
   animation: stock-skeleton-shimmer 1.35s ease-in-out infinite;
+  /* 減少 skeleton 動畫觸發整頁 reflow */
+  contain: layout style;
+  will-change: background-position;
 }

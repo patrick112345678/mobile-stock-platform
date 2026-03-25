@@ -1,5 +1,6 @@
 "use client"
 
+import dynamic from "next/dynamic"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
@@ -12,7 +13,6 @@ import {
   PanelRightOpen,
   X,
 } from "lucide-react"
-import TradingChart from "@/components/TradingChart"
 import { AiReportPanel } from "@/components/AiReportPanel"
 import { AccountSidebarCard, AccountTopBar } from "@/components/DashboardAccount"
 import { formatStockLabel, StockLabel } from "@/components/StockLabel"
@@ -25,6 +25,12 @@ import {
   SkeletonPeerTableRows,
   SkeletonTechCard,
 } from "@/components/Skeleton"
+
+/** K 線與 lightweight-charts 動態載入，避免拖慢首屏與主執行緒 */
+const TradingChart = dynamic(() => import("@/components/TradingChart"), {
+  ssr: false,
+  loading: () => <SkeletonChartBlock />,
+})
 import {
   addWatchlist,
   analyzeAI,
@@ -34,14 +40,11 @@ import {
   handleAuthError,
   getAIOpportunities,
   getChart,
-  getDetail,
-  getMultiTimeframe,
   getPeers,
-  getQuote,
+  getSelectionBundle,
   getScannerLeaderboard,
   getScannerOpportunities,
   getScannerWatchlist,
-  getSignalTable,
   getWatchlist,
   getWatchlistOverview,
   reorderWatchlist,
@@ -165,7 +168,8 @@ export default function Home() {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const [marketPool, setMarketPool] = useState<"TW" | "US" | "CRYPTO">("TW")
   const [scanPool, setScanPool] = useState<"TOP30" | "TOP100" | "TOP800" | "ALL">("TOP30")
-  const [symbolInput, setSymbolInput] = useState("2330")
+  /** 僅供搜尋框使用，與 selected 解耦，避免切換自選時觸發 /market/search */
+  const [searchKeyword, setSearchKeyword] = useState("")
   const [showChart, setShowChart] = useState(false)
   const [chartInterval, setChartInterval] = useState<"1h" | "4h" | "1d" | "1wk">("1d")
 
@@ -202,6 +206,7 @@ export default function Home() {
   const peerFetchSeqRef = useRef(0)
   const lastFetchedStockKeyRef = useRef<string | null>(null)
   const lastFetchedChartIntervalRef = useRef<typeof chartInterval>(chartInterval)
+  const aiLayerSeqRef = useRef(0)
 
   const [techScoreMin, setTechScoreMin] = useState(60)
   const [screenerFilterResult, setScreenerFilterResult] = useState<any[]>([])
@@ -233,13 +238,13 @@ export default function Home() {
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
 
-  /** 固定行動版（iPhone）版面 */
+  /** 固定為 iPhone 行動版面 */
   const isLg = false
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false)
 
   const [aiMode, setAiMode] = useState<"daily" | "watchlist">("daily")
 
-  /** 行動版預設收合底部「技術面」，避免遮住主內容 */
+  /** 行動版預設收合底部「技術面」 */
   const [isRightPanelCollapsed, setIsRightPanelCollapsed] = useState(true)
 
   const [aiData, setAiData] = useState<AIAnalyzeResponse | null>(null)
@@ -381,7 +386,6 @@ export default function Home() {
         const pick = firstTw ?? finalMapped[0]
         setSelected(pick)
         setMarketPool(pick.market)
-        setSymbolInput(pick.symbol)
       }
     } catch (err) {
       console.error(err)
@@ -621,6 +625,28 @@ export default function Home() {
   const isHeaderPricePending = isQuotePending || (isDetailPending && !quoteForSelection)
   const isAiBlockPending = aiLoading && aiKey !== selectedStockKey
 
+  const fetchQuickAiSummary = useCallback(() => {
+    if (!checkedAuth || !selected.symbol) return
+    const mySeq = ++aiLayerSeqRef.current
+    const sym = selected.symbol
+    const mkt = selected.market
+    const key = `${sym}-${mkt}`
+    setAiLoading(true)
+    void stockFetchDedupe(`ai:${key}`, () => analyzeAI(sym, mkt))
+      .then((res) => {
+        if (aiLayerSeqRef.current !== mySeq) return
+        setAiData(res as AIAnalyzeResponse)
+        setAiKey(key)
+      })
+      .catch((e) => {
+        console.error("analyzeAI error:", e)
+      })
+      .finally(() => {
+        if (aiLayerSeqRef.current !== mySeq) return
+        setAiLoading(false)
+      })
+  }, [checkedAuth, selected.symbol, selected.market])
+
   useEffect(() => {
     if (!checkedAuth) return
     if (!selected.symbol) return
@@ -635,101 +661,74 @@ export default function Home() {
     const intervalOnly =
       !stockChanged && lastFetchedChartIntervalRef.current !== iv
 
-    const runLayer1QuoteDetail = () => {
+    /** 單一 HTTP：後端執行緒並行 quote/detail/chart/mtf/signal，避免多支 GET 在 Render 上排隊 */
+    const runLayerBundleQuoteThroughSignal = () => {
       setError("")
       setQuoteLoading(true)
       setDetailLoading(true)
-
-      void Promise.allSettled([
-        stockFetchDedupe(`quote:${key}`, () => getQuote(sym, mkt)),
-        stockFetchDedupe(`detail:${key}`, () => getDetail(sym, mkt)),
-      ])
-        .then((results) => {
-          if (stockFetchSeqRef.current !== mySeq) return
-          const [qr, dr] = results
-          if (qr.status === "fulfilled") {
-            setQuote(qr.value as QuoteData)
-            setQuoteKey(key)
-          } else {
-            console.warn("getQuote:", qr.reason)
-            setQuoteKey(null)
-          }
-          if (dr.status === "fulfilled") {
-            setDetailData(dr.value as DetailData)
-            setDetailKey(key)
-          } else {
-            console.warn("getDetail:", dr.reason)
-            setDetailKey(null)
-          }
-        })
-        .finally(() => {
-          if (stockFetchSeqRef.current !== mySeq) return
-          setQuoteLoading(false)
-          setDetailLoading(false)
-        })
-    }
-
-    const runLayer2ChartMtfSig = () => {
       setChartLoading(true)
       setMtfLoading(true)
       setSigLoading(true)
       setMtfError(null)
       setSigError(null)
 
-      void Promise.allSettled([
-        stockFetchDedupe(`chart:${key}:${iv}`, () => getChart(sym, mkt, iv)),
-        stockFetchDedupe(`mtf:${key}`, () => getMultiTimeframe(sym, mkt)),
-        stockFetchDedupe(`sig:${key}`, () => getSignalTable(sym, mkt)),
-      ])
-        .then((results) => {
+      void stockFetchDedupe(`bundle:${key}:${iv}`, () => getSelectionBundle(sym, mkt, iv))
+        .then((bundle) => {
           if (stockFetchSeqRef.current !== mySeq) return
 
-          const [chartResult, mtfResult, sigResult] = results
+          if (bundle.quote && typeof bundle.quote === "object") {
+            setQuote(bundle.quote as QuoteData)
+            setQuoteKey(key)
+          } else {
+            setQuoteKey(null)
+          }
 
-          if (chartResult.status === "fulfilled") {
-            const chartJson = chartResult.value as { candles?: ChartCandle[] }
-            setChartData(Array.isArray(chartJson.candles) ? chartJson.candles : [])
+          if (bundle.detail && typeof bundle.detail === "object") {
+            setDetailData(bundle.detail as DetailData)
+            setDetailKey(key)
+          } else {
+            setDetailKey(null)
+          }
+
+          const candles = bundle.chart?.candles
+          if (Array.isArray(candles)) {
+            setChartData(candles as ChartCandle[])
             setChartKey(key)
           } else {
-            console.error("getChart error:", chartResult.status === "rejected" ? chartResult.reason : "")
             setChartData([])
             setChartKey(null)
           }
 
-          setMultiTimeframe(
-            mtfResult.status === "fulfilled" && Array.isArray(mtfResult.value) ? mtfResult.value : []
-          )
-          setMtfKey(mtfResult.status === "fulfilled" ? key : null)
-          setMtfError(mtfResult.status === "rejected" ? (mtfResult.reason?.message ?? "未知錯誤") : null)
+          if (Array.isArray(bundle.multi_timeframe)) {
+            setMultiTimeframe(bundle.multi_timeframe)
+            setMtfKey(key)
+            setMtfError(bundle.errors?.multi_timeframe ?? null)
+          } else {
+            setMultiTimeframe([])
+            setMtfKey(null)
+            setMtfError(bundle.errors?.multi_timeframe ?? "未知錯誤")
+          }
 
-          setSignalTable(
-            sigResult.status === "fulfilled" && Array.isArray(sigResult.value) ? sigResult.value : []
-          )
-          setSigKey(sigResult.status === "fulfilled" ? key : null)
-          setSigError(sigResult.status === "rejected" ? (sigResult.reason?.message ?? "未知錯誤") : null)
+          if (Array.isArray(bundle.signal_table)) {
+            setSignalTable(bundle.signal_table)
+            setSigKey(key)
+            setSigError(bundle.errors?.signal_table ?? null)
+          } else {
+            setSignalTable([])
+            setSigKey(null)
+            setSigError(bundle.errors?.signal_table ?? "未知錯誤")
+          }
+        })
+        .catch((e) => {
+          console.warn("selection-bundle:", e)
         })
         .finally(() => {
           if (stockFetchSeqRef.current !== mySeq) return
+          setQuoteLoading(false)
+          setDetailLoading(false)
           setChartLoading(false)
           setMtfLoading(false)
           setSigLoading(false)
-        })
-    }
-
-    const runLayer3Ai = () => {
-      setAiLoading(true)
-      stockFetchDedupe(`ai:${key}`, () => analyzeAI(sym, mkt))
-        .then((res) => {
-          if (stockFetchSeqRef.current !== mySeq) return
-          setAiData(res as AIAnalyzeResponse)
-          setAiKey(key)
-        })
-        .catch((e) => {
-          console.error("analyzeAI error:", e)
-        })
-        .finally(() => {
-          if (stockFetchSeqRef.current !== mySeq) return
-          setAiLoading(false)
         })
     }
 
@@ -760,35 +759,45 @@ export default function Home() {
     lastFetchedStockKeyRef.current = key
     lastFetchedChartIntervalRef.current = iv
 
-    runLayer1QuoteDetail()
-    runLayer2ChartMtfSig()
-    // 第三層延後到下一個 macrotask，讓 quote/detail 與背景 layer2 先進入佇列，避免與首屏競爭
-    window.setTimeout(() => runLayer3Ai(), 0)
+    runLayerBundleQuoteThroughSignal()
   }, [selected.symbol, selected.market, chartInterval, checkedAuth])
 
+  /** 同業比較延遲載入，避免與 selection-bundle 同一瞬間打 /market/peers */
   useEffect(() => {
-    if (activeTab !== "fundamental" || (selected.market !== "TW" && selected.market !== "US")) return
-    const mySeq = ++peerFetchSeqRef.current
+    if (activeTab !== "fundamental" || (selected.market !== "TW" && selected.market !== "US")) {
+      return
+    }
+    setPeers([])
     setLoadingPeers(true)
-    getPeers(selected.symbol, selected.market, 6)
-      .then((r) => {
-        if (peerFetchSeqRef.current !== mySeq) return
-        setPeers(r.peers || [])
-      })
-      .catch(() => {
-        if (peerFetchSeqRef.current !== mySeq) return
-        setPeers([])
-      })
-      .finally(() => {
-        if (peerFetchSeqRef.current !== mySeq) return
-        setLoadingPeers(false)
-      })
+    const sym = selected.symbol
+    const mkt = selected.market
+    const delayMs = 900
+    const timer = window.setTimeout(() => {
+      const mySeq = ++peerFetchSeqRef.current
+      getPeers(sym, mkt, 6)
+        .then((r) => {
+          if (peerFetchSeqRef.current !== mySeq) return
+          setPeers(r.peers || [])
+        })
+        .catch(() => {
+          if (peerFetchSeqRef.current !== mySeq) return
+          setPeers([])
+        })
+        .finally(() => {
+          if (peerFetchSeqRef.current !== mySeq) return
+          setLoadingPeers(false)
+        })
+    }, delayMs)
+    return () => {
+      clearTimeout(timer)
+      setLoadingPeers(false)
+    }
   }, [activeTab, selected.symbol, selected.market])
 
   useEffect(() => {
     if (!checkedAuth) return
 
-    const keyword = symbolInput.trim()
+    const keyword = searchKeyword.trim()
 
     if (!keyword) {
       setSearchResults([])
@@ -809,10 +818,10 @@ export default function Home() {
       } finally {
         setSearchLoading(false)
       }
-    }, 250)
+    }, 350)
 
     return () => clearTimeout(timer)
-  }, [symbolInput, marketPool, checkedAuth])
+  }, [searchKeyword, marketPool, checkedAuth])
 
   const filteredWatchlist = useMemo(() => {
     return watchlist.filter((w) => w.market === marketPool)
@@ -860,8 +869,8 @@ export default function Home() {
   }, [scannerMode, watchlistScannerResult, filteredScannerResult, watchlistSymbolSet, marketPool, techScoreMin])
 
   function handleSelectSearchItem(item: SearchItem) {
-    setSymbolInput(item.symbol)
     setShowSearchDropdown(false)
+    setSearchKeyword("")
     setSelected({
       symbol: item.symbol,
       market: item.market,
@@ -877,7 +886,7 @@ export default function Home() {
         router.push("/login?msg=請先登入後再新增自選股")
         return
       }
-      const symbol = symbolInput.trim().toUpperCase()
+      const symbol = searchKeyword.trim().toUpperCase()
       if (!symbol) return
 
       const normalized = normalizeWatchlistSymbol(symbol, marketPool)
@@ -937,7 +946,7 @@ export default function Home() {
       ? aiOpportunitiesUpdatedAt
         ? `更新時間：${new Date(aiOpportunitiesUpdatedAt).toLocaleString("zh-TW")}`
         : "尚未載入 AI 今日機會"
-      : "顯示自選股技術分析，按「AI 深度分析」才呼叫 AI"
+      : "顯示自選股技術分析；標的技術摘要請點「AI 每日機會」載入"
 
   if (!checkedAuth) {
     return (
@@ -1062,15 +1071,15 @@ export default function Home() {
                 onClick={() => {
                   if (!isLg) setMobileDrawerOpen(false)
                 }}
-                className="flex w-full items-center justify-center rounded-xl border border-violet-700/60 bg-violet-950/40 px-3 py-2.5 text-sm font-medium text-violet-200 hover:bg-violet-900/50 sm:py-2.5"
+                className="flex w-full items-center justify-center rounded-xl border border-violet-700/60 bg-violet-950/40 px-3 py-2.5 text-sm font-medium text-violet-200 hover:bg-violet-900/50"
               >
                 付費方案 · Premium
               </Link>
 
               <div className="relative" ref={searchRef}>
                 <input
-                  value={symbolInput}
-                  onChange={(e) => setSymbolInput(e.target.value)}
+                  value={searchKeyword}
+                  onChange={(e) => setSearchKeyword(e.target.value)}
                   onFocus={() => {
                     if (searchResults.length > 0) setShowSearchDropdown(true)
                   }}
@@ -1126,7 +1135,6 @@ export default function Home() {
                 watchlistOverview={watchlistOverview}
                 onSelectItem={(item) => {
                   setSelected(item)
-                  setSymbolInput(item.symbol)
                   setMarketPool(item.market)
                   setShowSearchDropdown(false)
                   if (!isLg) setMobileDrawerOpen(false)
@@ -1586,6 +1594,7 @@ export default function Home() {
                           return
                         }
                         void runAiOpportunities(8, true)
+                        fetchQuickAiSummary()
                       } else {
                         void runWatchlistTech(50)
                       }
@@ -1601,7 +1610,10 @@ export default function Home() {
                   <button
                     onClick={() => {
                       setAiMode("daily")
-                      if (aiAccess) void runAiOpportunities(8)
+                      if (aiAccess) {
+                        void runAiOpportunities(8)
+                        fetchQuickAiSummary()
+                      }
                     }}
                     className={`px-3 py-2 rounded-md text-sm border ${
                       aiMode === "daily"
@@ -2081,7 +2093,9 @@ export default function Home() {
                             <SkeletonBar className="h-4 w-4/5" />
                           </div>
                         ) : (
-                          <p className="text-zinc-500">選定標的後會自動載入技術摘要。</p>
+                          <p className="text-zinc-500">
+                            請至右側「AI 分析」區塊點「AI 每日機會」載入（會一併請求目前標的技術摘要）；切換股票不會自動請求。
+                          </p>
                         )}
                         {aiForSelection?.quick_summary?.bullish?.length ? (
                           <div className="mt-2">

@@ -133,7 +133,6 @@ export function AccountTopBar({
   onMenuOpenChange: (open: boolean) => void
   onRefreshUser: () => Promise<void>
   onLogout: () => void
-  /** 行動版：顯示左側選單（自選／搜尋） */
   showNavToggle?: boolean
   onOpenNav?: () => void
 }) {
